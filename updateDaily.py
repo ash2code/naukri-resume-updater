@@ -1,10 +1,13 @@
 import requests
 import json
+import urllib3
 from io import BytesIO
 from datetime import datetime
 import os
 import random
 import sys
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 username = os.environ.get("NAUKRI_USERNAME", "")
 password = os.environ.get("NAUKRI_PASSWORD", "")
@@ -18,21 +21,22 @@ def generate_file_key():
     return "U" + ''.join(random.choice(chars) for _ in range(13))
 
 
-def download_from_drive(file_id: str) -> bytes:
+def download_from_drive(fid):
     session = requests.Session()
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    session.verify = False
+    url = f"https://drive.google.com/uc?export=download&id={fid}"
     resp = session.get(url, stream=True)
     resp.raise_for_status()
 
     if "text/html" in resp.headers.get("Content-Type", ""):
         token = next((v for k, v in resp.cookies.items() if k.startswith("download_warning")), None)
         if not token:
-            raise Exception("Google Drive returned HTML page — file may not be publicly shared")
+            raise Exception("Google Drive returned HTML page - file may not be publicly shared")
         resp = session.get(f"{url}&confirm={token}", stream=True)
         resp.raise_for_status()
 
     if resp.content[:4] != b'%PDF':
-        raise Exception(f"Downloaded content is not a valid PDF")
+        raise Exception("Downloaded content is not a valid PDF")
 
     return resp.content
 
@@ -53,10 +57,11 @@ class NaukriClient:
         "x-requested-with": "XMLHttpRequest",
     }
 
-    def __init__(self, username, password):
-        self.username = username
-        self.password = password
+    def __init__(self, uname, pwd):
+        self.username = uname
+        self.password = pwd
         self.session = requests.Session()
+        self.session.verify = False
         self._token = None
 
     def login(self):
@@ -77,7 +82,7 @@ class NaukriClient:
         )
 
         if resp.status_code != 200:
-            print(f"[✗] Login response {resp.status_code}: {resp.text[:500]}")
+            print(f"[FAIL] Login {resp.status_code}: {resp.text[:500]}")
 
         resp.raise_for_status()
 
@@ -92,7 +97,7 @@ class NaukriClient:
         if not self._token:
             raise Exception("Bearer token not found after login")
 
-        print("[✓] Login successful")
+        print(f"[OK] Login successful, token: {self._token[:20]}...")
 
     def auth_headers(self):
         return {**self.BASE_HEADERS, "authorization": f"Bearer {self._token}"}
@@ -107,15 +112,25 @@ class NaukriClient:
 
     def fetch_profile_id(self):
         resp = self.session.get(self.DASHBOARD_URL, headers=self.auth_headers())
+
+        print(f"[->] Dashboard status: {resp.status_code}")
+        print(f"[->] Dashboard body: {resp.text[:500]}")
+
         resp.raise_for_status()
+
+        if not resp.text.strip():
+            raise Exception("Dashboard returned empty response body")
+
         data = resp.json()
         profile_id = data.get("dashBoard", {}).get("profileId") or data.get("profileId")
+
         if not profile_id:
-            raise Exception(f"Profile ID not found: {json.dumps(data)[:300]}")
-        print(f"[✓] Profile ID: {profile_id}")
+            raise Exception(f"Profile ID not found in: {json.dumps(data)[:300]}")
+
+        print(f"[OK] Profile ID: {profile_id}")
         return profile_id
 
-    def upload_resume(self, pdf_bytes, filename, form_key):
+    def upload_resume(self, pdf_bytes, fname, fkey):
         file_key = generate_file_key()
         resp = requests.post(
             "https://filevalidation.naukri.com/file",
@@ -127,25 +142,28 @@ class NaukriClient:
                 "systemid": "fileupload",
                 "user-agent": "Mozilla/5.0",
             },
-            files={"file": (filename, BytesIO(pdf_bytes), "application/pdf")},
+            files={"file": (fname, BytesIO(pdf_bytes), "application/pdf")},
             data={
-                "formKey": form_key,
-                "fileName": filename,
+                "formKey": fkey,
+                "fileName": fname,
                 "uploadCallback": "true",
                 "fileKey": file_key,
-            }
+            },
+            verify=False
         )
         resp.raise_for_status()
+
         try:
             upload_json = resp.json()
             if file_key not in upload_json:
                 file_key = next(iter(upload_json.keys()))
         except Exception:
             pass
-        print(f"[✓] Uploaded — file key: {file_key}")
+
+        print(f"[OK] Uploaded, file key: {file_key}")
         return file_key
 
-    def attach_resume(self, profile_id, form_key, file_key):
+    def attach_resume(self, profile_id, fkey, file_key):
         resp = self.session.post(
             f"https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/profiles/{profile_id}/advResume",
             headers={
@@ -158,14 +176,14 @@ class NaukriClient:
             cookies=self.required_cookies(),
             data=json.dumps({
                 "textCV": {
-                    "formKey": form_key,
+                    "formKey": fkey,
                     "fileKey": file_key,
                     "textCvContent": None
                 }
             })
         )
         resp.raise_for_status()
-        print("[✓] Resume attached to profile")
+        print("[OK] Resume attached to profile")
 
 
 def update_resume():
@@ -180,7 +198,7 @@ def update_resume():
         return {"success": False, "error": f"Missing env vars: {', '.join(missing)}"}
 
     final_filename = filename or f"resume_{datetime.now().strftime('%d_%B_%Y').lower()}.pdf"
-    print(f"[→] Filename: {final_filename}")
+    print(f"[->] Filename: {final_filename}")
 
     client = NaukriClient(username, password)
 
@@ -190,9 +208,9 @@ def update_resume():
         return {"success": False, "error": f"Login failed: {e}"}
 
     try:
-        print("[→] Downloading from Google Drive...")
+        print("[->] Downloading from Google Drive...")
         pdf_bytes = download_from_drive(file_id)
-        print(f"[✓] Downloaded {len(pdf_bytes):,} bytes")
+        print(f"[OK] Downloaded {len(pdf_bytes):,} bytes")
     except Exception as e:
         return {"success": False, "error": f"Download failed: {e}"}
 
@@ -219,7 +237,7 @@ if __name__ == "__main__":
     result = update_resume()
     print("=" * 50)
     if result["success"]:
-        print(f"✅ Resume updated: {result['filename']}")
+        print(f"SUCCESS: Resume updated: {result['filename']}")
     else:
-        print(f"❌ Failed: {result['error']}")
+        print(f"FAILED: {result['error']}")
         sys.exit(1)
