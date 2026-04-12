@@ -1,26 +1,30 @@
-name: Run Daily Python Script
+name: Daily Resume Update
 
 on:
   schedule:
-    - cron: '30 0 * * *'   # 6:00 AM IST
+    - cron: '30 0 * * *'  # 7:30 AM IST
   workflow_dispatch:
 
 jobs:
-  run-script:
+  update-resume:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests urllib3
 
-      - name: Run script
+      - name: Run update script
+        env:
+          NAUKRI_USERNAME: ${{ secrets.NAUKRI_USERNAME }}
+          NAUKRI_PASSWORD: ${{ secrets.NAUKRI_PASSWORD }}
+          GOOGLE_DRIVE_FILE_ID: ${{ secrets.GOOGLE_DRIVE_FILE_ID }}
+          NAUKRI_FORM_KEY: ${{ secrets.NAUKRI_FORM_KEY }}
         run: python updateDaily.py
-
