@@ -1,5 +1,6 @@
 import requests
 import json
+import os
 from io import BytesIO
 from datetime import datetime
 import random
@@ -7,10 +8,10 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-username = "ashokmanvisoma@gmail.com"
-password = "Maanvis@292516"
-file_id = "1qO4_Cc7vt52WH1ukiOJz_QQ9awZsD3Qn"
-form_key = "F51f8e7e54e205"
+username = os.environ.get("NAUKRI_USERNAME")
+password = os.environ.get("NAUKRI_PASSWORD")
+file_id = os.environ.get("GOOGLE_DRIVE_FILE_ID")
+form_key = os.environ.get("NAUKRI_FORM_KEY")
 filename = ""
 
 def generate_file_key(length):
