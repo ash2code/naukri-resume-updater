@@ -27,32 +27,36 @@ def update_resume():
     s = requests.Session()
     s.verify = False
 
-    # Realistic browser headers
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
     })
 
-    # Step 1: Visit homepage to establish cookies
+    # Step 1: Visit homepage
     print("Visiting homepage...")
     s.get("https://www.naukri.com/", timeout=30)
-    time.sleep(2)
+    time.sleep(3)
 
-    # Step 2: Visit login page to get additional cookies
+    # Step 2: Visit login page
     print("Visiting login page...")
     s.get("https://www.naukri.com/nlogin/login", timeout=30)
     time.sleep(2)
 
-    # Step 3: Login
+    # Step 3: Login with updated payload and headers
     print("Logging in...")
+    login_payload = {
+        "username": username,
+        "password": password,
+        "grantType": "PASSWORD",
+        "appId": 105,
+        "itm": "glblsrch_logins",
+        "additionalInfo": {}
+    }
+
     r = s.post(
         "https://www.naukri.com/central-login-services/v1/login",
         headers={
@@ -64,42 +68,60 @@ def update_resume():
             "x-requested-with": "XMLHttpRequest",
             "origin": "https://www.naukri.com",
             "referer": "https://www.naukri.com/nlogin/login",
+            "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
         },
-        json={"username": username, "password": password},
+        json=login_payload,
         timeout=30
     )
 
-    if r.status_code == 403:
-        print("403 on login - printing response for debug:", r.text[:300])
+    print("Login status:", r.status_code)
+    if r.status_code != 200:
+        print("Login error response:", r.text[:500])
         r.raise_for_status()
 
-    r.raise_for_status()
-    print("Login status:", r.status_code)
+    # Extract token
+    token = None
+    for cookie_name in ["nauk_at", "nkSso", "nauk_sso"]:
+        token = s.cookies.get(cookie_name)
+        if token:
+            print(f"Token from cookie '{cookie_name}': {token[:30]}...")
+            break
 
-    # Extract token from cookies or response
-    token = s.cookies.get("nauk_at") or s.cookies.get("nkSso")
     if not token:
-        # Try extracting from response body
-        login_data = r.json()
-        token = login_data.get("loginData", {}).get("token", "")
-    print("Token obtained:", bool(token))
-    time.sleep(1)
+        try:
+            login_data = r.json()
+            token = (
+                login_data.get("loginData", {}).get("token") or
+                login_data.get("token") or
+                login_data.get("data", {}).get("token")
+            )
+            print("Token from response body:", bool(token))
+        except Exception as e:
+            print("Could not parse login response:", e)
+
+    if not token:
+        raise ValueError("Login succeeded but no token found. Check cookie names.")
+
+    time.sleep(2)
 
     # Step 4: Download PDF from Google Drive
     print("Downloading resume from Google Drive...")
-    # Handle Google Drive large file warning redirect
     drive_session = requests.Session()
     drive_session.verify = False
+
     res = drive_session.get(
         f"https://drive.google.com/uc?export=download&id={file_id}",
         allow_redirects=True,
-        timeout=30
+        timeout=60
     )
-    # Handle confirmation page for large files
-    if "confirm=" in res.url or b"virus scan warning" in res.content:
+
+    # Handle large file confirmation
+    if b"confirm=" in res.content or b"virus scan warning" in res.content.lower():
         confirm_token = None
         for key, value in res.cookies.items():
             if key.startswith("download_warning"):
@@ -108,13 +130,17 @@ def update_resume():
         if confirm_token:
             res = drive_session.get(
                 f"https://drive.google.com/uc?export=download&id={file_id}&confirm={confirm_token}",
-                timeout=30
+                timeout=60
             )
+
     res.raise_for_status()
     print("PDF size:", len(res.content), "bytes")
 
-    # Step 5: Upload resume to Naukri file validation
-    print("Uploading resume...")
+    if len(res.content) < 1000:
+        raise ValueError(f"Downloaded file too small, likely not a valid PDF: {res.content[:200]}")
+
+    # Step 5: Upload resume
+    print("Uploading resume to Naukri...")
     upload_resp = s.post(
         "https://filevalidation.naukri.com/file",
         headers={
@@ -123,6 +149,9 @@ def update_resume():
             "origin": "https://www.naukri.com",
             "referer": "https://www.naukri.com/",
             "systemid": "fileupload",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "cross-site",
         },
         files={"file": (final_filename, BytesIO(res.content), "application/pdf")},
         data={
@@ -132,14 +161,16 @@ def update_resume():
             "fileKey": FILE_KEY
         },
         verify=False,
-        timeout=30
+        timeout=60
     )
-    upload_resp.raise_for_status()
     print("Upload status:", upload_resp.status_code)
-    time.sleep(1)
+    if upload_resp.status_code != 200:
+        print("Upload error:", upload_resp.text[:300])
+    upload_resp.raise_for_status()
+    time.sleep(2)
 
-    # Step 6: Get profile ID from dashboard
-    print("Fetching profile ID...")
+    # Step 6: Get profile ID
+    print("Fetching dashboard...")
     d = s.get(
         "https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/dashboard",
         headers={
@@ -147,19 +178,24 @@ def update_resume():
             "appid": "105",
             "clientid": "d3skt0p",
             "systemid": "Naukri",
-            "authorization": f"Bearer {token}"
+            "authorization": f"Bearer {token}",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
         },
         timeout=30
     )
     d.raise_for_status()
-    profile_id = d.json().get("dashBoard", {}).get("profileId")
+    dashboard_data = d.json()
+    profile_id = dashboard_data.get("dashBoard", {}).get("profileId")
     print("Profile ID:", profile_id)
 
     if not profile_id:
-        raise ValueError("Could not retrieve profile ID. Check token or session.")
+        print("Dashboard response:", json.dumps(dashboard_data, indent=2)[:500])
+        raise ValueError("Could not retrieve profile ID.")
 
     # Step 7: Update resume
-    print("Updating resume on profile...")
+    print("Updating resume...")
     payload = {
         "textCV": {
             "formKey": form_key,
@@ -181,6 +217,9 @@ def update_resume():
             "appid": "105",
             "clientid": "d3skt0p",
             "systemid": "105",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
         },
         data=json.dumps(payload),
         timeout=30
