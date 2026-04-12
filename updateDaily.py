@@ -25,8 +25,28 @@ def update_resume():
     s = requests.Session()
     s.verify = False
 
+    # Set realistic browser headers
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    })
+
+    # Visit homepage first to get cookies
+    s.get("https://www.naukri.com/", timeout=30)
+
     r = s.post("https://www.naukri.com/central-login-services/v1/login",
-        headers={"accept":"application/json","appid":"105","clientid":"d3skt0p","content-type":"application/json","systemid":"jobseeker","user-agent":"Mozilla/5.0","x-requested-with":"XMLHttpRequest"},
+        headers={
+            "accept": "application/json",
+            "appid": "105",
+            "clientid": "d3skt0p",
+            "content-type": "application/json",
+            "systemid": "jobseeker",
+            "x-requested-with": "XMLHttpRequest",
+            "origin": "https://www.naukri.com",
+            "referer": "https://www.naukri.com/nlogin/login",
+        },
         json={"username": username, "password": password})
     r.raise_for_status()
     print("Login:", r.status_code)
