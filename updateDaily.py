@@ -1,147 +1,139 @@
 import requests
 import json
-import os
 from io import BytesIO
 from datetime import datetime
+import os
 import random
-import urllib3
-import time
+import sys
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-username = os.environ.get("NAUKRI_USERNAME")
-password = os.environ.get("NAUKRI_PASSWORD")
-file_id = os.environ.get("GOOGLE_DRIVE_FILE_ID")
-form_key = os.environ.get("NAUKRI_FORM_KEY")
-filename = ""
+# ================== CONFIG (from GitHub Secrets / env vars) ==================
+username = os.environ.get("NAUKRI_USERNAME", "")
+password = os.environ.get("NAUKRI_PASSWORD", "")
+file_id  = os.environ.get("GOOGLE_DRIVE_FILE_ID", "")
+form_key = os.environ.get("NAUKRI_FORM_KEY", "")
+filename = os.environ.get("RESUME_FILENAME", "")  # Optional override
 
-def generate_file_key(length):
+
+# ================== UTIL ==================
+def generate_file_key(length=13):
     chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    return "".join(random.choice(chars) for _ in range(length))
+    return "U" + ''.join(random.choice(chars) for _ in range(length))
 
-def update_resume():
-    today = datetime.now()
-    final_filename = filename or f"resume_{today.strftime('%d_%B_%Y').lower()}.pdf"
-    FILE_KEY = "U" + generate_file_key(13)
 
-    s = requests.Session()
-    s.verify = False
+def download_from_drive(file_id: str) -> bytes:
+    """
+    Handles Google Drive's virus-scan confirmation page for larger files.
+    """
+    session = requests.Session()
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    resp = session.get(url, stream=True)
+    resp.raise_for_status()
 
-    s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    })
+    # Check for confirmation page (large file virus warning)
+    content_type = resp.headers.get("Content-Type", "")
+    if "text/html" in content_type:
+        # Extract confirm token from response
+        token = None
+        for key, value in resp.cookies.items():
+            if key.startswith("download_warning"):
+                token = value
+                break
 
-    # Step 1: Visit homepage
-    print("Visiting homepage...")
-    s.get("https://www.naukri.com/", timeout=30)
-    time.sleep(3)
+        if token:
+            confirm_url = f"{url}&confirm={token}"
+            resp = session.get(confirm_url, stream=True)
+            resp.raise_for_status()
+        else:
+            raise Exception("Google Drive returned HTML — file may be too large or not publicly shared")
 
-    # Step 2: Visit login page
-    print("Visiting login page...")
-    s.get("https://www.naukri.com/nlogin/login", timeout=30)
-    time.sleep(2)
+    content = resp.content
 
-    # Step 3: Login with updated payload and headers
-    print("Logging in...")
-    login_payload = {
-        "username": username,
-        "password": password,
-        "grantType": "PASSWORD",
-        "appId": 105,
-        "itm": "glblsrch_logins",
-        "additionalInfo": {}
+    if content[:4] != b'%PDF':
+        raise Exception(f"Downloaded content is not a valid PDF (got: {content[:20]})")
+
+    return content
+
+
+# ================== LOGIN CLIENT ==================
+class NaukriLoginClient:
+    LOGIN_URL = "https://www.naukri.com/central-login-services/v1/login"
+    DASHBOARD_URL = "https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/dashboard"
+
+    BASE_HEADERS = {
+        "accept": "application/json",
+        "appid": "105",
+        "clientid": "d3skt0p",
+        "systemid": "jobseeker",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "x-requested-with": "XMLHttpRequest",
     }
 
-    r = s.post(
-        "https://www.naukri.com/central-login-services/v1/login",
-        headers={
-            "accept": "application/json",
-            "appid": "105",
-            "clientid": "d3skt0p",
-            "content-type": "application/json",
-            "systemid": "jobseeker",
-            "x-requested-with": "XMLHttpRequest",
-            "origin": "https://www.naukri.com",
-            "referer": "https://www.naukri.com/nlogin/login",
-            "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-        },
-        json=login_payload,
-        timeout=30
-    )
+    def __init__(self, username: str, password: str):
+        self.username = username
+        self.password = password
+        self.session = requests.Session()
+        self._token = None
 
-    print("Login status:", r.status_code)
-    if r.status_code != 200:
-        print("Login error response:", r.text[:500])
-        r.raise_for_status()
+    def login(self):
+        headers = {**self.BASE_HEADERS, "content-type": "application/json", "referer": "https://www.naukri.com/nlogin/login"}
+        payload = {"username": self.username, "password": self.password}
 
-    # Extract token
-    token = None
-    for cookie_name in ["nauk_at", "nkSso", "nauk_sso"]:
-        token = s.cookies.get(cookie_name)
-        if token:
-            print(f"Token from cookie '{cookie_name}': {token[:30]}...")
-            break
+        resp = self.session.post(self.LOGIN_URL, headers=headers, json=payload)
+        resp.raise_for_status()
 
-    if not token:
-        try:
-            login_data = r.json()
-            token = (
-                login_data.get("loginData", {}).get("token") or
-                login_data.get("token") or
-                login_data.get("data", {}).get("token")
-            )
-            print("Token from response body:", bool(token))
-        except Exception as e:
-            print("Could not parse login response:", e)
+        self._token = self.session.cookies.get("nauk_at")
+        if not self._token:
+            raise Exception("Login succeeded but bearer token (nauk_at) not found in cookies")
 
-    if not token:
-        raise ValueError("Login succeeded but no token found. Check cookie names.")
+        print(f"[✓] Login successful")
+        return resp
 
-    time.sleep(2)
+    def get_bearer_token(self) -> str:
+        if not self._token:
+            raise Exception("Not logged in — call login() first")
+        return self._token
 
-    # Step 4: Download PDF from Google Drive
-    print("Downloading resume from Google Drive...")
-    drive_session = requests.Session()
-    drive_session.verify = False
+    def get_auth_headers(self) -> dict:
+        return {
+            **self.BASE_HEADERS,
+            "authorization": f"Bearer {self.get_bearer_token()}",
+        }
 
-    res = drive_session.get(
-        f"https://drive.google.com/uc?export=download&id={file_id}",
-        allow_redirects=True,
-        timeout=60
-    )
+    def fetch_profile_id(self) -> str:
+        resp = self.session.get(self.DASHBOARD_URL, headers=self.get_auth_headers())
+        resp.raise_for_status()
 
-    # Handle large file confirmation
-    if b"confirm=" in res.content or b"virus scan warning" in res.content.lower():
-        confirm_token = None
-        for key, value in res.cookies.items():
-            if key.startswith("download_warning"):
-                confirm_token = value
-                break
-        if confirm_token:
-            res = drive_session.get(
-                f"https://drive.google.com/uc?export=download&id={file_id}&confirm={confirm_token}",
-                timeout=60
-            )
+        data = resp.json()
+        profile_id = (
+            data.get("dashBoard", {}).get("profileId")
+            or data.get("profileId")
+        )
 
-    res.raise_for_status()
-    print("PDF size:", len(res.content), "bytes")
+        if not profile_id:
+            raise Exception(f"Profile ID not found in dashboard response: {json.dumps(data)[:300]}")
 
-    if len(res.content) < 1000:
-        raise ValueError(f"Downloaded file too small, likely not a valid PDF: {res.content[:200]}")
+        print(f"[✓] Profile ID: {profile_id}")
+        return profile_id
 
-    # Step 5: Upload resume
-    print("Uploading resume to Naukri...")
-    upload_resp = s.post(
+    def get_required_cookies(self) -> dict:
+        cookies = self.session.cookies.get_dict()
+        result = {"test": "naukri.com", "is_login": "1"}
+        for key in ["nauk_rt", "nauk_sid", "MYNAUKRI[UNID]"]:
+            if cookies.get(key):
+                result[key] = cookies[key]
+        return result
+
+
+# ================== UPLOAD ==================
+def upload_resume_file(pdf_bytes: bytes, filename: str, form_key: str) -> str:
+    """
+    Uploads PDF to Naukri file validation endpoint.
+    Returns the resolved file key.
+    """
+    file_key = generate_file_key()
+
+    resp = requests.post(
         "https://filevalidation.naukri.com/file",
         headers={
             "accept": "application/json",
@@ -149,89 +141,125 @@ def update_resume():
             "origin": "https://www.naukri.com",
             "referer": "https://www.naukri.com/",
             "systemid": "fileupload",
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "cross-site",
+            "user-agent": "Mozilla/5.0",
         },
-        files={"file": (final_filename, BytesIO(res.content), "application/pdf")},
+        files={"file": (filename, BytesIO(pdf_bytes), "application/pdf")},
         data={
             "formKey": form_key,
-            "fileName": final_filename,
+            "fileName": filename,
             "uploadCallback": "true",
-            "fileKey": FILE_KEY
-        },
-        verify=False,
-        timeout=60
+            "fileKey": file_key,
+        }
     )
-    print("Upload status:", upload_resp.status_code)
-    if upload_resp.status_code != 200:
-        print("Upload error:", upload_resp.text[:300])
-    upload_resp.raise_for_status()
-    time.sleep(2)
+    resp.raise_for_status()
 
-    # Step 6: Get profile ID
-    print("Fetching dashboard...")
-    d = s.get(
-        "https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/dashboard",
-        headers={
-            "accept": "application/json",
-            "appid": "105",
-            "clientid": "d3skt0p",
-            "systemid": "Naukri",
-            "authorization": f"Bearer {token}",
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-        },
-        timeout=30
-    )
-    d.raise_for_status()
-    dashboard_data = d.json()
-    profile_id = dashboard_data.get("dashBoard", {}).get("profileId")
-    print("Profile ID:", profile_id)
+    # Naukri may return a different key — resolve it
+    try:
+        upload_json = resp.json()
+        if file_key not in upload_json:
+            file_key = next(iter(upload_json.keys()))
+    except Exception:
+        pass  # Keep original file_key if parsing fails
 
-    if not profile_id:
-        print("Dashboard response:", json.dumps(dashboard_data, indent=2)[:500])
-        raise ValueError("Could not retrieve profile ID.")
+    print(f"[✓] Resume uploaded — file key: {file_key}")
+    return file_key
 
-    # Step 7: Update resume
-    print("Updating resume...")
+
+# ================== PROFILE UPDATE ==================
+def attach_resume_to_profile(client: NaukriLoginClient, profile_id: str, form_key: str, file_key: str):
+    url = f"https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/profiles/{profile_id}/advResume"
+
     payload = {
         "textCV": {
             "formKey": form_key,
-            "fileKey": FILE_KEY,
+            "fileKey": file_key,
             "textCvContent": None
         }
     }
 
-    resp = s.post(
-        f"https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/profiles/{profile_id}/advResume",
+    resp = client.session.post(
+        url,
         headers={
-            "accept": "application/json",
-            "authorization": f"Bearer {token}",
+            **client.get_auth_headers(),
             "content-type": "application/json",
             "origin": "https://www.naukri.com",
-            "referer": "https://www.naukri.com/mnjuser/profile?id=&altresid",
+            "referer": "https://www.naukri.com/",
             "x-http-method-override": "PUT",
-            "x-requested-with": "XMLHttpRequest",
-            "appid": "105",
-            "clientid": "d3skt0p",
-            "systemid": "105",
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
         },
-        data=json.dumps(payload),
-        timeout=30
+        cookies=client.get_required_cookies(),
+        data=json.dumps(payload)
     )
+    resp.raise_for_status()
+    print(f"[✓] Resume attached to profile successfully")
 
-    print("Update status:", resp.status_code)
-    print("Update response:", resp.text[:300])
 
-    if resp.status_code == 200:
-        return {"success": True, "message": "Resume updated successfully"}
+# ================== MAIN ==================
+def update_resume() -> dict:
+    # ---- Validate config ----
+    missing = [k for k, v in {"NAUKRI_USERNAME": username, "NAUKRI_PASSWORD": password,
+                               "GOOGLE_DRIVE_FILE_ID": file_id, "NAUKRI_FORM_KEY": form_key}.items() if not v]
+    if missing:
+        return {"success": False, "error": f"Missing env vars: {', '.join(missing)}"}
+
+    today = datetime.now()
+    final_filename = filename or f"resume_{today.strftime('%d_%B_%Y').lower()}.pdf"
+    print(f"[→] Resume filename: {final_filename}")
+
+    # ---- Login ----
+    client = NaukriLoginClient(username, password)
+    try:
+        client.login()
+    except Exception as e:
+        return {"success": False, "error": f"Login failed: {e}"}
+
+    # ---- Download from Google Drive ----
+    print(f"[→] Downloading resume from Google Drive...")
+    try:
+        pdf_bytes = download_from_drive(file_id)
+        print(f"[✓] Downloaded {len(pdf_bytes):,} bytes")
+    except Exception as e:
+        return {"success": False, "error": f"Download failed: {e}"}
+
+    # ---- Upload to Naukri ----
+    print(f"[→] Uploading to Naukri...")
+    try:
+        file_key = upload_resume_file(pdf_bytes, final_filename, form_key)
+    except Exception as e:
+        return {"success": False, "error": f"Upload failed: {e}"}
+
+    # ---- Fetch profile ID ----
+    try:
+        profile_id = client.fetch_profile_id()
+    except Exception as e:
+        return {"success": False, "error": f"Profile fetch failed: {e}"}
+
+    # ---- Attach resume to profile ----
+    try:
+        attach_resume_to_profile(client, profile_id, form_key, file_key)
+    except Exception as e:
+        return {"success": False, "error": f"Profile update failed: {e}"}
+
+    return {
+        "success": True,
+        "file_key": file_key,
+        "filename": final_filename,
+        "message": "Resume updated successfully on Naukri"
+    }
+
+
+# ================== ENTRY POINT ==================
+if __name__ == "__main__":
+    print("=" * 50)
+    print("Naukri Resume Auto-Updater")
+    print("=" * 50)
+
+    result = update_resume()
+
+    print("\n" + "=" * 50)
+    if result["success"]:
+        print(f"✅ SUCCESS: {result['message']}")
+        print(f"   File: {result['filename']}")
+        print(f"   Key:  {result['file_key']}")
     else:
-        return {"success": False, "message": f"Failed with status {resp.status_code}: {resp.text[:200]}"}
-
-
-print(update_resume())
+        print(f"❌ FAILED: {result['error']}")
+        sys.exit(1)  # Non-zero exit so GitHub Actions marks the job as failed
