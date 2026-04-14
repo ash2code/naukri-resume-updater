@@ -23,8 +23,7 @@ jobs:
 
       - name: Run resume updater
         env:
-          NAUKRI_USERNAME:      ${{ secrets.NAUKRI_USERNAME }}
-          NAUKRI_PASSWORD:      ${{ secrets.NAUKRI_PASSWORD }}
+          NAUKRI_COOKIES:       ${{ secrets.NAUKRI_COOKIES }}
           GOOGLE_DRIVE_FILE_ID: ${{ secrets.GOOGLE_DRIVE_FILE_ID }}
           NAUKRI_FORM_KEY:      ${{ secrets.NAUKRI_FORM_KEY }}
         run: python updateDaily.py
