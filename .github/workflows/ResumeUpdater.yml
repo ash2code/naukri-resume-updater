@@ -2,7 +2,7 @@ name: Update Naukri Resume
 
 on:
   schedule:
-    - cron: '20 18 * * *'
+    - cron: '55 11 * * *'
   workflow_dispatch:
 
 jobs:
