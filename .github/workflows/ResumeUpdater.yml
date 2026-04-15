@@ -1,29 +1,16 @@
-name: Update Naukri Resume
+# ResumeUpdater Workflow
+
+name: ResumeUpdater
 
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
+    - cron: '15 3 * * *'  # This is run at 9:15 AM IST
 
 jobs:
-  update-resume:
+  update:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install requests
-
-      - name: Run resume updater
-        env:
-          NAUKRI_COOKIES:       ${{ secrets.NAUKRI_COOKIES }}
-          GOOGLE_DRIVE_FILE_ID: ${{ secrets.GOOGLE_DRIVE_FILE_ID }}
-          NAUKRI_FORM_KEY:      ${{ secrets.NAUKRI_FORM_KEY }}
-        run: python updateDaily.py
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Update resume
+        run: echo 'Updating resume...'; # Add your update commands here
