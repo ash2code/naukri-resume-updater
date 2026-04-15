@@ -10,6 +10,8 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
+      - name: IST Time
+        run: TZ=Asia/Kolkata date
       - name: Checkout code
         uses: actions/checkout@v2
       - name: Update resume
