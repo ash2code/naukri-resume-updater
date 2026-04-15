@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      - name: Print IST current time
+        run: |
+          echo "Current IST time: $(TZ='Asia/Kolkata' date)"
+          
       - name: Checkout repository
         uses: actions/checkout@v5
 
