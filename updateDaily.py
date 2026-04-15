@@ -101,12 +101,17 @@ def main():
         if new_token:
             token = new_token
             print("[OK] Token refreshed")
+        else:
+            print("[WARN] Token refresh failed, trying existing nauk_at")
 
     if not token:
-        print("No auth token available")
+        print("No auth token available — update NAUKRI_COOKIES secret")
         sys.exit(1)
 
     print("[OK] Authenticated")
+
+    profile_id = get_profile_id(session, token)
+    print(f"[OK] Profile ID: {profile_id}")
 
     pdf = download_pdf(FILE_ID)
     print(f"[OK] Downloaded PDF ({len(pdf):,} bytes)")
@@ -114,9 +119,6 @@ def main():
     filename = f"resume_{datetime.now().strftime('%d_%b_%Y').lower()}.pdf"
     file_key = upload_file(pdf, filename, FORM_KEY)
     print(f"[OK] Uploaded: {filename}")
-
-    profile_id = get_profile_id(session, token)
-    print(f"[OK] Profile ID: {profile_id}")
 
     attach_to_profile(session, token, profile_id, FORM_KEY, file_key)
     print("[OK] Resume updated!")
